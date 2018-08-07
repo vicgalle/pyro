@@ -11,7 +11,7 @@ import pyro.poutine as poutine
 from pyro.contrib.autoguide import (AutoCallable, AutoDelta, AutoDiagonalNormal, AutoDiscreteParallel, AutoGuideList,
                                     AutoIAFNormal, AutoLaplaceApproximation, AutoLowRankMultivariateNormal,
                                     AutoMultivariateNormal)
-from pyro.infer import SVI, Trace_ELBO, TraceEnum_ELBO, TraceGraph_ELBO
+from pyro.infer import SVI, Trace_ELBO, TraceEnum_ELBO, TraceGraph_ELBO, config_enumerate
 from pyro.optim import Adam
 from tests.common import assert_equal
 
@@ -301,3 +301,49 @@ def test_empty_model_error():
     guide = AutoDiagonalNormal(model)
     with pytest.raises(RuntimeError):
         guide()
+
+
+@pytest.mark.xfail(reason="shape error")
+@pytest.mark.parametrize("num_steps,expand", [
+    (2, True),
+    (2, False),
+    (3, True),
+    (3, False),
+    (10, True),
+    (10, False),
+    pytest.param(20, False, marks=pytest.mark.skip(reason="extremely expensive")),
+    pytest.param(30, False, marks=pytest.mark.skip(reason="extremely expensive")),
+])
+def test_gaussian_hmm(num_steps, expand):
+    dim = 4
+    validate = "defined below"
+
+    @config_enumerate(default="parallel", expand=expand)
+    def model(data):
+        initialize = pyro.sample("initialize", dist.Dirichlet(torch.ones(dim)))
+        transition = pyro.sample("transition", dist.Dirichlet(torch.ones(dim, dim)))
+        emission_loc = pyro.sample("emission_loc", dist.Normal(torch.zeros(dim), torch.ones(dim)))
+        emission_scale = pyro.sample("emission_scale", dist.LogNormal(torch.zeros(dim), torch.ones(dim)))
+        x = None
+        for t, y in enumerate(data):
+            x = pyro.sample("x_{}".format(t), dist.Categorical(initialize if x is None else transition[x]))
+            pyro.sample("y_{}".format(t), dist.Normal(emission_loc[x], emission_scale[x]), obs=y)
+
+            # check shape
+            if validate:
+                effective_dim = sum(1 for size in x.shape if size > 1)
+                if expand:
+                    assert effective_dim == (1 if t else 0), t  # FIXME actual effective_dim = 0 at t = 1
+                else:
+                    assert effective_dim == t, t
+
+    validate = False
+    guide = AutoGuideList(model)
+    guide.add(AutoDiagonalNormal(poutine.block(model, hide_fn=lambda site: site["name"].startswith("x_"))))
+    guide.add(AutoDiscreteParallel(poutine.block(model, expose_fn=lambda site: site["name"].startswith("x_"))))
+
+    validate = True
+    data = torch.randn(num_steps)
+    elbo = TraceEnum_ELBO(max_iarange_nesting=0)
+    loss = elbo.loss_and_grads(model, guide, data)
+    assert np.isfinite(loss), loss

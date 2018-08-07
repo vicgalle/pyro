@@ -26,6 +26,7 @@ import pyro.distributions as dist
 import pyro.poutine as poutine
 from pyro.distributions.util import sum_rightmost
 from pyro.infer.enum import config_enumerate
+from pyro.poutine.enumerate_messenger import EXPAND_DEFAULT
 from pyro.poutine.util import prune_subsample_sites
 
 try:
@@ -689,10 +690,19 @@ class AutoDiscreteParallel(AutoGuide):
     """
     A discrete mean-field guide that learns a latent discrete distribution for
     each discrete site in the model.
+
+    :param callable model: a pyro model
+    :param str prefix: a prefix that will be prefixed to all param internal sites
+    :param bool expand: Whether to expand enumerated sample values. See
+        :meth:`~pyro.distributions.Distribution.enumerate_support` for details.
     """
+    def __init__(self, model, prefix="auto", expand=EXPAND_DEFAULT):
+        super(AutoDiscreteParallel, self).__init__(model, prefix=prefix)
+        self.expand = expand
+
     def _setup_prototype(self, *args, **kwargs):
         # run the model so we can inspect its structure
-        model = config_enumerate(self.model, default="parallel")
+        model = config_enumerate(self.model, default="parallel", expand=self.expand)
         self.prototype_trace = poutine.block(poutine.trace(model).get_trace)(*args, **kwargs)
         self.prototype_trace = prune_subsample_sites(self.prototype_trace)
         if self.master is not None:
