@@ -16,7 +16,9 @@ from __future__ import absolute_import, division, print_function
 from collections import OrderedDict
 import weakref
 
+import numpy as np
 import torch
+from torch.autograd import grad
 
 # Pyro keeps track of two kinds of global state:
 # i)  The effect handler stack, which enables non-standard interpretations of
@@ -308,3 +310,64 @@ def elbo(model, guide, *args, **kwargs):
 # This is a wrapper for compatibility with full Pyro.
 def Trace_ELBO(*args, **kwargs):
     return elbo
+
+def compute_logp(model_trace):
+    elbo_p = 0.
+    for site in model_trace.values():
+        if site["type"] == "sample":
+            elbo_p = elbo_p + site["fn"].log_prob(site["value"]).sum()
+    return elbo_p
+
+# Add noise
+# Other sites than loc
+def sgld(trace, lr=0.1, T=5):
+    #lrp = param('lr', torch.tensor(lr))
+    lrp = 0.1
+    for _ in range(T):
+        elbo = compute_logp(trace)
+        g = grad(elbo, trace['loc']['value'], create_graph=True)
+        trace['loc']['value'] = trace['loc']['value'] + lrp*g[0]
+    return trace
+
+def mcmc(trace, T=100, sigma=0.1):
+    #igma_p = param('sigma_mcmc', torch.tensor(sigma))
+    sigma_p = sigma
+    count = 0.
+    for _ in range(T):
+        elbo = compute_logp(trace)
+        proposal = trace['loc']['value'] + sigma_p*torch.randn_like(trace['loc']['value'])
+        prop_trace = trace
+        prop_trace['loc']['value'] = proposal
+        prop_elbo = compute_logp(prop_trace)
+        if np.log(np.random.rand()) < prop_elbo - elbo:
+            trace = prop_trace
+            count += 1
+
+
+    #print(count/T)
+    return trace
+
+
+
+def delbo(model, guide, *args, **kwargs):
+
+    guide_trace = trace(guide).get_trace(*args, **kwargs)
+    model_trace = trace(replay(model, guide_trace)).get_trace(*args, **kwargs)
+    # We will accumulate the various terms of the ELBO in `elbo`.
+
+    model_trace = mcmc(model_trace)
+
+    elbo = compute_logp(model_trace)
+
+    # Loop over all the sample sites in the guide and add the corresponding
+    # -log q(z) term to the ELBO.
+    for site in guide_trace.values():
+        if site["type"] == "sample":
+            elbo = elbo - site["fn"].log_prob(site["value"]).sum()
+
+    return -elbo
+
+
+# This is a wrapper for compatibility with full Pyro.
+def Trace_dELBO(*args, **kwargs):
+    return delbo
