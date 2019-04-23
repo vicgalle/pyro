@@ -320,22 +320,25 @@ def compute_logp(model_trace):
 
 # Add noise
 # Other sites than loc
+# If need improvements: collect multiple particles given initial z_0
+# dynamic T
 def sgld(trace, lr=0.1, T=5):
-    #lrp = param('lr', torch.tensor(lr))
-    lrp = 0.1
+    lrp = param('lr', torch.tensor(lr))
+    #lrp = 0.1
     for _ in range(T):
         elbo = compute_logp(trace)
         g = grad(elbo, trace['loc']['value'], create_graph=True)
         trace['loc']['value'] = trace['loc']['value'] + lrp*g[0]
     return trace
 
+# For a powerful guide, sigma seems to go to 0!!
 def mcmc(trace, T=100, sigma=0.1):
-    #igma_p = param('sigma_mcmc', torch.tensor(sigma))
-    sigma_p = sigma
+    log_sigma_p = param('log_sigma_mcmc', torch.log(torch.tensor(sigma)))
+    #sigma_p = sigma
     count = 0.
     for _ in range(T):
         elbo = compute_logp(trace)
-        proposal = trace['loc']['value'] + sigma_p*torch.randn_like(trace['loc']['value'])
+        proposal = trace['loc']['value'] + log_sigma_p.exp()*torch.randn_like(trace['loc']['value'])
         prop_trace = trace
         prop_trace['loc']['value'] = proposal
         prop_elbo = compute_logp(prop_trace)

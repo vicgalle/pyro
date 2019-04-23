@@ -51,7 +51,7 @@ def main(args):
         pyro.get_param_store().clear()
         for step in range(args.num_steps):
             loss = svi.step(data)
-            if step % 100 == 0:
+            if step % args.log_every == 0:
                 print("step {} loss = {}".format(step, loss))
 
         # Report the final values of the variational parameters
@@ -74,5 +74,6 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--seed", default=0, type=int)
     parser.add_argument("-lr", "--learning-rate", default=0.02, type=float)
     parser.add_argument("-l", "--loss", default="elbo")
+    parser.add_argument("-log", "--log_every", default=100, type=int)
     args = parser.parse_args()
     main(args)
