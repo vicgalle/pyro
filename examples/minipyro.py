@@ -34,6 +34,8 @@ def main(args):
     # Generate some data.
     torch.manual_seed(args.seed)
     data = torch.randn(100) + 3.0
+    # for example: when changing 3 by 60, the gradient explotes (though it can be corrected by setting lr_inn/10)
+    # a possible solution would be to just train the sampler at the last epochs (when the guide is near the true location value)
 
     # Because the API in minipyro matches that of Pyro proper,
     # training code works with generic Pyro implementations.
@@ -45,7 +47,7 @@ def main(args):
         else:
             elbo = infer.Trace_dELBO()
         adam = optim.Adam({"lr": args.learning_rate})
-        svi = infer.SVI(model, guide, adam, elbo)
+        svi = infer.SVI(model, guide, adam, elbo, num_particles=args.num_particles)
 
         # Basic training loop
         pyro.get_param_store().clear()
@@ -74,6 +76,7 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--seed", default=0, type=int)
     parser.add_argument("-lr", "--learning-rate", default=0.02, type=float)
     parser.add_argument("-l", "--loss", default="elbo")
+    parser.add_argument("-np", "--num-particles", default=1, type=int)
     parser.add_argument("-log", "--log_every", default=100, type=int)
     args = parser.parse_args()
     main(args)

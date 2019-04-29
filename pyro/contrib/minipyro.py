@@ -243,11 +243,12 @@ class Adam(object):
 # The actual construction of the loss is taken care of by `loss`.
 # See http://docs.pyro.ai/en/0.3.1/inference_algos.html
 class SVI(object):
-    def __init__(self, model, guide, optim, loss):
+    def __init__(self, model, guide, optim, loss, num_particles=1):
         self.model = model
         self.guide = guide
         self.optim = optim
         self.loss = loss
+        self.num_particles = num_particles
 
     # This method handles running the model and guide, constructing the loss
     # function, and taking a gradient step.
@@ -255,10 +256,12 @@ class SVI(object):
         # This wraps both the call to `model` and `guide` in a `trace` so that
         # we can record all the parameters that are encountered. Note that
         # further tracing occurs inside of `loss`.
-        with trace() as param_capture:
-            # We use block here to allow tracing to record parameters only.
-            with block(hide_fn=lambda msg: msg["type"] == "sample"):
-                loss = self.loss(self.model, self.guide, *args, **kwargs)
+        loss = 0.
+        for _ in range(self.num_particles):
+            with trace() as param_capture:
+                # We use block here to allow tracing to record parameters only.
+                with block(hide_fn=lambda msg: msg["type"] == "sample"):
+                    loss += self.loss(self.model, self.guide, *args, **kwargs)/self.num_particles
         # Differentiate the loss.
         loss.backward()
         # Grab all the parameters from the trace.
@@ -279,6 +282,7 @@ class SVI(object):
 # random variables with reparameterized samplers), but all the ELBO
 # implementations in Pyro share the same basic logic.
 def elbo(model, guide, *args, **kwargs):
+
     # Run the guide with the arguments passed to SVI.step() and trace the execution,
     # i.e. record all the calls to Pyro primitives like sample() and param().
     guide_trace = trace(guide).get_trace(*args, **kwargs)
@@ -304,6 +308,8 @@ def elbo(model, guide, *args, **kwargs):
             elbo = elbo - site["fn"].log_prob(site["value"]).sum()
     # Return (-elbo) since by convention we do gradient descent on a loss and
     # the ELBO is a lower bound that needs to be maximized.
+
+
     return -elbo
 
 
@@ -322,19 +328,42 @@ def compute_logp(model_trace):
 # Other sites than loc
 # If need improvements: collect multiple particles given initial z_0
 # dynamic T
-def sgld(trace, lr=0.1, T=5):
-    lrp = param('lr', torch.tensor(lr))
-    #lrp = 0.1
+def sgld(trace_m, model, guide_tr, *args, **kwargs):
+    lr=0.0005
+    T=10
+    # lrp = param('lr', torch.tensor(lr))
+    lrp = lr
+    # lrp = 0.1
+
+    def log_prob_(loc):
+        trace_m['loc']['value'] = loc
+        return compute_logp(trace_m)
+
+
     for _ in range(T):
-        elbo = compute_logp(trace)
-        g = grad(elbo, trace['loc']['value'], create_graph=True)
-        trace['loc']['value'] = trace['loc']['value'] + lrp*g[0]
-    return trace
+        
+        guide_tr['loc']['value'] = trace_m['loc']['value']
+        trace_m = trace(replay(model, guide_tr)).get_trace(*args, **kwargs)
+        # trace_m = trace(model).get_trace(*args, **kwargs)
+        # elbo = compute_logp(trace)
+        z = trace_m['loc']['value']
+        lp = log_prob_(z)
+        g = grad(lp, z, create_graph=True)
+        trace_m['loc']['value'] = trace_m['loc']['value'] + lrp*g[0]
+    # print(trace_m['loc']['value'])
+    # print(trace_m)
+    return trace_m
 
 # For a powerful guide, sigma seems to go to 0!!
+# we should re-call model inside, as in sgld?
 def mcmc(trace, T=100, sigma=0.1):
-    log_sigma_p = param('log_sigma_mcmc', torch.log(torch.tensor(sigma)))
-    #sigma_p = sigma
+    trainable = False
+    if trainable:
+        log_sigma_p = param('log_sigma_mcmc', torch.log(torch.tensor(sigma)))
+    else:
+        log_sigma_p = torch.log(torch.tensor(sigma))
+    # print(log_sigma_p)
+    # sigma_p = sigma
     count = 0.
     for _ in range(T):
         elbo = compute_logp(trace)
@@ -347,7 +376,7 @@ def mcmc(trace, T=100, sigma=0.1):
             count += 1
 
 
-    #print(count/T)
+    # print(count/T)
     return trace
 
 
@@ -357,9 +386,9 @@ def delbo(model, guide, *args, **kwargs):
     guide_trace = trace(guide).get_trace(*args, **kwargs)
     model_trace = trace(replay(model, guide_trace)).get_trace(*args, **kwargs)
     # We will accumulate the various terms of the ELBO in `elbo`.
-
-    model_trace = mcmc(model_trace)
-
+    
+    model_trace = sgld(model_trace, model, guide_trace, *args, **kwargs)
+    
     elbo = compute_logp(model_trace)
 
     # Loop over all the sample sites in the guide and add the corresponding
@@ -367,7 +396,7 @@ def delbo(model, guide, *args, **kwargs):
     for site in guide_trace.values():
         if site["type"] == "sample":
             elbo = elbo - site["fn"].log_prob(site["value"]).sum()
-
+    
     return -elbo
 
 
